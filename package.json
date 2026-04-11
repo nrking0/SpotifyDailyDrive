@@ -13,8 +13,8 @@
   "keywords": ["spotify", "daily-drive", "playlist", "podcast", "automation", "raspberry-pi", "orange-pi"],
   "license": "MIT",
   "dependencies": {
+    "@spotify/web-api-ts-sdk": "1.2.0",
     "js-yaml": "^4.1.0",
-    "spotify-web-api-node": "^5.0.2",
     "express": "^4.21.0",
     "open": "^10.1.0"
   }

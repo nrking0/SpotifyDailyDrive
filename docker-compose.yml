@@ -1,0 +1,41 @@
+services:
+  dailydrive:
+    build: .
+    image: dailydrive:latest
+    container_name: dailydrive
+    restart: unless-stopped
+
+    # Environment variables for Spotify credentials (injected into config.yaml)
+    environment:
+      # Spotify API credentials — pass these in via .env file or docker compose
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8889/callback}
+      SPOTIFY_PLAYLIST_ID: ${SPOTIFY_PLAYLIST_ID:-}
+
+      # Schedule times are in UTC (no timezone conversion)
+      SCHEDULE_TIMES: ${SCHEDULE_TIMES:-11:00,23:00}
+
+    volumes:
+      # Mount your local config and token
+      - ./config.yaml:/app/config.yaml:ro
+      - ./.spotify-token.json:/app/.spotify-token.json
+      # Persistent storage for state
+      - spotify_data:/app/data
+
+    # Expose port only if you want to run setup interactively
+    # (not needed for scheduled runs)
+    # ports:
+    #   - "8888:8888"
+
+    # Healthcheck (optional — exits cleanly after each run)
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/.spotify-token.json"]
+      interval: 60s
+      timeout: 10s
+      retries: 1
+      start_period: 30s
+
+volumes:
+  spotify_data:
+    driver: local

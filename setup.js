@@ -10,7 +10,7 @@
 
 const fs = require("fs");
 const yaml = require("js-yaml");
-const SpotifyWebApi = require("spotify-web-api-node");
+const { SpotifyApi } = require("@spotify/web-api-ts-sdk");
 const express = require("express");
 
 const TOKEN_FILE = ".spotify-token.json";
@@ -44,11 +44,7 @@ if (
 }
 
 // --- Set up Spotify client ---
-const spotifyApi = new SpotifyWebApi({
-  clientId: client_id,
-  clientSecret: client_secret,
-  redirectUri: redirect_uri,
-});
+const spotifyApi = SpotifyApi.withClientCredentials(client_id, client_secret);
 
 const SCOPES = [
   "playlist-modify-public",
@@ -60,13 +56,26 @@ const SCOPES = [
   "user-read-recently-played",
   "user-top-read",
 ];
+const AUTH_STATE = "dailydrive";
+
+function buildAuthorizeUrl() {
+  const params = new URLSearchParams({
+    client_id,
+    response_type: "code",
+    redirect_uri,
+    state: AUTH_STATE,
+    scope: SCOPES.join(" "),
+    show_dialog: "true",
+  });
+  return `https://accounts.spotify.com/authorize?${params.toString()}`;
+}
 
 // --- Start a tiny web server to catch the callback ---
 const app = express();
 const port = new URL(redirect_uri).port || 8888;
 
 app.get("/callback", async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
 
   if (error) {
     res.send(`<h1>Error: ${error}</h1><p>Please try again.</p>`);
@@ -74,12 +83,33 @@ app.get("/callback", async (req, res) => {
     process.exit(1);
   }
 
+  if (state !== AUTH_STATE) {
+    res.send("<h1>Error</h1><p>Invalid OAuth state. Please try setup again.</p>");
+    console.error("\n❌ OAuth state mismatch\n");
+    process.exit(1);
+  }
+
   try {
-    const data = await spotifyApi.authorizationCodeGrant(code);
+    const authBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri,
+      client_id,
+      client_secret,
+    });
+    const tokenRes = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: authBody.toString(),
+    });
+    if (!tokenRes.ok) {
+      throw new Error(`Token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`);
+    }
+    const data = await tokenRes.json();
     const tokenData = {
-      access_token: data.body.access_token,
-      refresh_token: data.body.refresh_token,
-      expires_at: Date.now() + data.body.expires_in * 1000,
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + data.expires_in * 1000,
     };
 
     fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokenData, null, 2));
@@ -100,9 +130,11 @@ app.get("/callback", async (req, res) => {
   }
 });
 
-// Bind to 127.0.0.1 explicitly (Spotify requires this, not "localhost")
-app.listen(port, "127.0.0.1", () => {
-  const authUrl = spotifyApi.createAuthorizeURL(SCOPES, "dailydrive");
+// Bind to all interfaces (0.0.0.0) for Docker compatibility, or 127.0.0.1 for local only
+// In Docker, 127.0.0.1 only accepts local connections; port mapping requires 0.0.0.0
+const bindAddress = process.env.DOCKER_ENV ? "0.0.0.0" : "127.0.0.1";
+app.listen(port, bindAddress, () => {
+  const authUrl = buildAuthorizeUrl();
 
   console.log("\n🎵 Daily Drive — Setup\n");
   console.log("Open this URL in your browser to authorize:\n");

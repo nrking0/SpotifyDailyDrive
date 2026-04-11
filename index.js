@@ -16,7 +16,7 @@ const fs = require("fs");
 
 // --- Third-party libraries (installed via npm install) ---
 const yaml = require("js-yaml");               // Parses YAML config files
-const SpotifyWebApi = require("spotify-web-api-node"); // Wraps the Spotify Web API
+const { SpotifyApi } = require("@spotify/web-api-ts-sdk");
 
 // --- File paths used by the script ---
 const TOKEN_FILE = ".spotify-token.json";  // Stores your Spotify OAuth tokens (created by setup.js)
@@ -96,27 +96,73 @@ function shuffle(array) {
 }
 
 /**
+ * Returns true when a track should be excluded from Daily Drive music.
+ * We support a configurable keyword list plus a classical-music heuristic.
+ */
+function shouldExcludeTrack(track, musicConfig) {
+  const title = (track.name || "").toLowerCase();
+  const artist = (track.artist || "").toLowerCase();
+  const searchable = `${title} ${artist}`;
+
+  const configuredKeywords = (musicConfig.exclude_keywords || []).map((k) => String(k).toLowerCase());
+  for (const keyword of configuredKeywords) {
+    if (keyword && searchable.includes(keyword)) return true;
+  }
+
+  if (musicConfig.exclude_classical) {
+    const classicalKeywords = [
+      "classical", "symphony", "symphonic", "concerto", "sonata", "suite", "adagio", "orchestra",
+      "philarmonic", "philharmonic", "philharmoniker", "movement", "act ", "opus", "op.", "no.",
+      "mozart", "beethoven", "bach", "chopin", "debussy",
+      "tchaikovsky", "rachmaninoff", "vivaldi", "brahms", "handel", "stravinsky", "mahler",
+      "schubert", "ravel", "liszt", "mendelssohn", "dvorak", "satie", "prokofiev", "shostakovich",
+      "khachaturian", "bernstein",
+    ];
+    for (const keyword of classicalKeywords) {
+      if (searchable.includes(keyword)) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Spotify access tokens expire after 1 hour. This function checks if the token
  * is about to expire (within 5 minutes) and refreshes it automatically using
  * the long-lived refresh token. You don't need to re-authenticate manually.
  */
-async function refreshTokenIfNeeded(spotifyApi, token) {
+async function refreshTokenIfNeeded(token, clientId, clientSecret) {
   if (Date.now() > token.expires_at - 5 * 60 * 1000) {
     console.log("🔄 Refreshing access token...");
-    const data = await spotifyApi.refreshAccessToken();
+    const authBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: token.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: authBody.toString(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Token refresh failed: ${response.status} ${await response.text()}`);
+    }
+
+    const data = await response.json();
 
     // Update the token in memory
-    token.access_token = data.body.access_token;
-    token.expires_at = Date.now() + data.body.expires_in * 1000;
+    token.access_token = data.access_token;
+    token.expires_at = Date.now() + data.expires_in * 1000;
 
     // Spotify sometimes rotates the refresh token too — save it if provided
-    if (data.body.refresh_token) {
-      token.refresh_token = data.body.refresh_token;
+    if (data.refresh_token) {
+      token.refresh_token = data.refresh_token;
     }
 
     // Persist to disk and update the API client
     saveToken(token);
-    spotifyApi.setAccessToken(token.access_token);
     console.log("✅ Token refreshed");
   }
 }
@@ -143,12 +189,9 @@ async function fetchPodcastEpisodes(spotifyApi, podcasts) {
 
     try {
       // Ask Spotify for the most recent episodes of this show
-      const data = await spotifyApi.getShowEpisodes(podcast.id, {
-        limit: count,
-        market: "US", // Required for episode availability
-      });
+      const data = await spotifyApi.shows.episodes(podcast.id, "US", count, 0);
 
-      for (const episode of data.body.items) {
+      for (const episode of data.items) {
         episodes.push({
           uri: episode.uri,      // Spotify URI like "spotify:episode:abc123"
           name: episode.name,
@@ -174,7 +217,7 @@ async function fetchPodcastEpisodes(spotifyApi, podcasts) {
  *
  * Tracks are shuffled and trimmed to the requested count.
  */
-async function fetchMusicTracks(spotifyApi, musicConfig) {
+async function fetchMusicTracks(spotifyApi, musicConfig, accessToken) {
   let allTracks = [];
 
   // --- Source 1: Pull tracks from user-specified playlists ---
@@ -188,7 +231,6 @@ async function fetchMusicTracks(spotifyApi, musicConfig) {
       try {
         // Spotify returns max 100 items per request, so we paginate through
         // larger playlists by incrementing the offset
-        const accessToken = spotifyApi.getAccessToken();
         let offset = 0;
         let hasMore = true;
 
@@ -212,12 +254,15 @@ async function fetchMusicTracks(spotifyApi, musicConfig) {
             // The /items endpoint returns the content in entry.item (not entry.track)
             const track = entry.item;
             if (track && track.uri && track.type === "track") {
-              allTracks.push({
+              const mappedTrack = {
                 uri: track.uri,
                 name: track.name,
                 artist: track.artists?.map((a) => a.name).join(", ") || "Unknown",
                 type: "track",
-              });
+              };
+              if (!shouldExcludeTrack(mappedTrack, musicConfig)) {
+                allTracks.push(mappedTrack);
+              }
             }
           }
 
@@ -244,30 +289,38 @@ async function fetchMusicTracks(spotifyApi, musicConfig) {
     //   "long_term"   = all time
     const timeRange = musicConfig.top_tracks.time_range || "short_term";
     const count = musicConfig.top_tracks.count || 30;
+    const totalSongs = musicConfig.total_songs || 15;
+    const targetNonExcluded = Math.max(count, totalSongs * 2);
     console.log(`🎵 Fetching top tracks (${timeRange})...`);
 
     try {
       let offset = 0;
-      let remaining = count;
+      const limit = 50;
+      let acceptedFromTopTracks = 0;
 
-      // Spotify returns max 50 top tracks per request, so paginate if needed
-      while (remaining > 0) {
-        const limit = Math.min(remaining, 50);
-        const data = await spotifyApi.getMyTopTracks({ limit, offset, time_range: timeRange });
+      // Keep paging until we have a solid non-excluded pool, or Spotify runs out.
+      while (acceptedFromTopTracks < targetNonExcluded) {
+        const data = await spotifyApi.currentUser.topItems("tracks", timeRange, limit, offset);
 
-        for (const track of data.body.items) {
-          allTracks.push({
+        if (!data.items.length) break;
+
+        for (const track of data.items) {
+          const mappedTrack = {
             uri: track.uri,
             name: track.name,
             artist: track.artists?.map((a) => a.name).join(", ") || "Unknown",
             type: "track",
-          });
+          };
+          if (!shouldExcludeTrack(mappedTrack, musicConfig)) {
+            allTracks.push(mappedTrack);
+            acceptedFromTopTracks++;
+          }
         }
 
         // If we got fewer tracks than requested, there are no more
-        if (data.body.items.length < limit) break;
+        if (data.items.length < limit) break;
         offset += limit;
-        remaining -= limit;
+        if (offset >= 1000) break;
       }
 
       console.log(`    Found ${allTracks.length} tracks from top tracks`);
@@ -294,7 +347,7 @@ async function fetchMusicTracks(spotifyApi, musicConfig) {
  *
  * Tracks are split evenly across genres, then shuffled and trimmed.
  */
-async function fetchGenreTracks(spotifyApi, genres, count) {
+async function fetchGenreTracks(spotifyApi, genres, count, musicConfig) {
   const tracks = [];
   // Divide the target count evenly among configured genres
   const perGenre = Math.ceil(count / genres.length);
@@ -303,20 +356,20 @@ async function fetchGenreTracks(spotifyApi, genres, count) {
     console.log(`🎵 Searching for ${genre} tracks...`);
     try {
       // Use Spotify's search with a "genre:" filter
-      const data = await spotifyApi.searchTracks(`genre:${genre}`, {
-        limit: Math.min(perGenre, 10), // Spotify Dev Mode caps search at 10 results per query
-        market: "US",
-      });
+      const data = await spotifyApi.search(`genre:${genre}`, ["track"], "US", Math.min(perGenre, 10), 0);
 
-      for (const track of data.body.tracks.items) {
-        tracks.push({
+      for (const track of data.tracks.items) {
+        const mappedTrack = {
           uri: track.uri,
           name: track.name,
           artist: track.artists?.map((a) => a.name).join(", ") || "Unknown",
           type: "track",
-        });
+        };
+        if (!shouldExcludeTrack(mappedTrack, musicConfig)) {
+          tracks.push(mappedTrack);
+        }
       }
-      console.log(`    Found ${data.body.tracks.items.length} tracks`);
+      console.log(`    Found ${data.tracks.items.length} tracks`);
     } catch (err) {
       console.error(`    ⚠️  Failed to search genre ${genre}: ${err.message}`);
     }
@@ -389,7 +442,7 @@ function mixContent(episodes, tracks, pattern) {
  * PUT replaces the first 100 items; POST appends additional batches if needed.
  * This endpoint accepts both track and episode URIs.
  */
-async function updatePlaylist(spotifyApi, playlistId, items) {
+async function updatePlaylist(playlistId, items, accessToken) {
   const uris = items.map((item) => item.uri);
 
   // In dry-run mode, just print what would happen and return
@@ -406,9 +459,6 @@ async function updatePlaylist(spotifyApi, playlistId, items) {
     console.log(`\n✅ Dry run complete. ${items.length} items would be added.\n`);
     return;
   }
-
-  // Get the current access token for direct API calls
-  const accessToken = spotifyApi.getAccessToken();
 
   // PUT replaces the entire playlist with up to 100 items at once
   const clearRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/items`, {
@@ -452,19 +502,29 @@ async function main() {
   const config = loadConfig();
   const token = loadToken();
 
-  // Step 2: Create Spotify API client with your app credentials
-  const spotifyApi = new SpotifyWebApi({
-    clientId: config.spotify.client_id,
-    clientSecret: config.spotify.client_secret,
-    redirectUri: config.spotify.redirect_uri,
-  });
+  // Step 2: Refresh access token if needed before creating the SDK client
+  await refreshTokenIfNeeded(token, config.spotify.client_id, config.spotify.client_secret);
 
-  // Set the tokens so the API client can make authenticated requests
-  spotifyApi.setAccessToken(token.access_token);
-  spotifyApi.setRefreshToken(token.refresh_token);
-
-  // Step 3: Refresh the access token if it's about to expire
-  await refreshTokenIfNeeded(spotifyApi, token);
+  // Step 3: Create Spotify API client with the (possibly refreshed) token
+  const spotifyApi = SpotifyApi.withAccessToken(
+    config.spotify.client_id,
+    {
+      access_token: token.access_token,
+      token_type: "Bearer",
+      expires_in: Math.max(1, Math.floor((token.expires_at - Date.now()) / 1000)),
+      refresh_token: token.refresh_token,
+    },
+    [
+      "playlist-modify-public",
+      "playlist-modify-private",
+      "playlist-read-private",
+      "playlist-read-collaborative",
+      "user-library-read",
+      "user-read-private",
+      "user-read-recently-played",
+      "user-top-read",
+    ]
+  );
 
   // Step 4: Make sure the user has set a real playlist ID
   if (!config.playlist_id || config.playlist_id === "your-playlist-id-here") {
@@ -503,12 +563,12 @@ async function main() {
       // No saved music — fall back to a full music fetch
       // This happens on the very first run, or if state.json was deleted
       console.log("⚠️  No saved music tracks found — falling back to full music fetch");
-      tracks = await fetchAllMusicTracks(spotifyApi, config);
+      tracks = await fetchAllMusicTracks(spotifyApi, config, token.access_token);
     }
   } else {
     // --- Full refresh mode (daily) ---
     // Fetch fresh music from all sources (top tracks, playlists, genre discovery)
-    tracks = await fetchAllMusicTracks(spotifyApi, config);
+    tracks = await fetchAllMusicTracks(spotifyApi, config, token.access_token);
   }
 
   if (episodes.length === 0 && tracks.length === 0) {
@@ -533,7 +593,7 @@ async function main() {
   const mixed = [...pinnedFirst, ...mixContent(mixableEpisodes, tracks, config.mix_pattern)];
 
   // Step 10: Push the final mixed playlist to Spotify
-  await updatePlaylist(spotifyApi, config.playlist_id, mixed);
+  await updatePlaylist(config.playlist_id, mixed, token.access_token);
 
   // Step 11: Save state so the next run can detect if episodes have changed
   if (!DRY_RUN) {
@@ -562,7 +622,7 @@ async function main() {
  * Used by full refresh mode, and as a fallback for podcast-only mode
  * when no saved tracks exist yet.
  */
-async function fetchAllMusicTracks(spotifyApi, config) {
+async function fetchAllMusicTracks(spotifyApi, config, accessToken) {
   const musicConfig = config.music || {};
   const totalSongs = musicConfig.total_songs || 15;
   const hasGenres = musicConfig.genres && musicConfig.genres.length > 0;
@@ -575,11 +635,11 @@ async function fetchAllMusicTracks(spotifyApi, config) {
 
   // Fetch familiar tracks (your top tracks + any source playlists)
   const familiarConfig = { ...musicConfig, total_songs: familiarCount };
-  let tracks = await fetchMusicTracks(spotifyApi, familiarConfig);
+  let tracks = await fetchMusicTracks(spotifyApi, familiarConfig, accessToken);
 
   // Fetch discovery tracks (genre-based search for new music)
   if (hasGenres && discoveryCount > 0) {
-    const genreTracks = await fetchGenreTracks(spotifyApi, musicConfig.genres, discoveryCount);
+    const genreTracks = await fetchGenreTracks(spotifyApi, musicConfig.genres, discoveryCount, musicConfig);
 
     // Remove any genre tracks that duplicate songs already in the familiar set
     const familiarUris = new Set(tracks.map((t) => t.uri));
