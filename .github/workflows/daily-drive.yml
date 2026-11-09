@@ -1,0 +1,76 @@
+# Daily Drive — scheduled playlist refresh on GitHub Actions.
+#
+# This repo is public, so its Actions logs are public too. Every step here is
+# built to print nothing about your account or listening:
+#   - scripts/ci-run.js runs index.js with all output discarded and prints only
+#     fixed status lines (success / failed + exit code).
+#   - Secrets are passed as env vars only to that one step, never inlined.
+#   - state.json is cached encrypted (forks' PR workflows can read caches).
+#
+# Required secrets:  DD_CONFIG_YAML, DD_TOKEN_JSON
+# Optional secrets:  DD_STATE_KEY, DD_GH_PAT
+# Setup steps: see README "Run on GitHub Actions".
+
+name: Daily Drive
+
+on:
+  schedule:
+    # UTC, same slots as the Docker setup (11:00 and 22:00).
+    # Minute 7 avoids the top-of-hour rush that delays scheduled runs.
+    - cron: "7 11,22 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (don't change the playlist)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-drive
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # Never run in forks: they have no secrets, and it isn't their playlist.
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --omit=dev --no-audit --no-fund --loglevel=error > /dev/null 2>&1 || { echo "npm ci failed"; exit 1; }
+
+      - name: Restore encrypted state
+        uses: actions/cache/restore@v4
+        with:
+          path: .dd-state
+          key: dd-state-${{ github.run_id }}
+          restore-keys: dd-state-
+
+      - name: Refresh playlist (output suppressed)
+        env:
+          DD_CONFIG_YAML: ${{ secrets.DD_CONFIG_YAML }}
+          DD_TOKEN_JSON: ${{ secrets.DD_TOKEN_JSON }}
+          DD_STATE_KEY: ${{ secrets.DD_STATE_KEY }}
+          DD_GH_PAT: ${{ secrets.DD_GH_PAT }}
+          DD_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: node scripts/ci-run.js
+
+      - name: Save encrypted state
+        if: ${{ always() && hashFiles('.dd-state/state.json.enc') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .dd-state
+          key: dd-state-${{ github.run_id }}-${{ github.run_attempt }}
