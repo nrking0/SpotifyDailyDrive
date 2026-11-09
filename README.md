@@ -102,6 +102,34 @@ For unattended updates, use the scripts in `scripts/` with cron:
 
 These are designed for Linux-style deployments (including mini PCs and SBCs).
 
+### Run on GitHub Actions
+
+`.github/workflows/daily-drive.yml` refreshes the playlist at 11:07 and 22:07 UTC (and on demand from the Actions tab).
+
+Actions logs on a public repo are public, so the workflow runs through `scripts/ci-run.js`, which throws away all script output and prints only fixed lines like `refresh succeeded` or `refresh failed (exit code 1)`. No podcast names, songs, IDs, or error messages ever reach the log. To see why a run failed, run `npm test` locally.
+
+Add these under **Settings → Secrets and variables → Actions**:
+
+| Secret | Required | Value |
+| --- | --- | --- |
+| `DD_CONFIG_YAML` | yes | Full contents of your `config.yaml` |
+| `DD_TOKEN_JSON` | yes | Full contents of `.spotify-token.json` (run `npm run setup` locally first) |
+| `DD_STATE_KEY` | no | Any long random string. Encrypts `state.json` between runs so unchanged episodes can be skipped. Without it, every run does a full rebuild. |
+| `DD_GH_PAT` | no | Fine-grained token for this repo with **Secrets: read and write**. Lets the workflow save a new refresh token if Spotify rotates it. |
+
+From a terminal with the GitHub CLI:
+
+```bash
+gh secret set DD_CONFIG_YAML < config.yaml
+gh secret set DD_TOKEN_JSON < .spotify-token.json
+openssl rand -base64 32 | gh secret set DD_STATE_KEY
+```
+
+Notes:
+- GitHub disables scheduled workflows on public repos after 60 days with no commits. Re-enable it from the Actions tab if that happens.
+- If you edit `config.yaml`, update the `DD_CONFIG_YAML` secret too.
+- Turn off the Docker container once this is running, or the playlist refreshes twice.
+
 ## Configuration Highlights
 
 Main file: `config.yaml`

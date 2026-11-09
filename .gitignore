@@ -106,3 +106,6 @@ docs/
 
 # --- Claude/AI assistant memory (may contain project context) ---
 .claude/
+
+# Encrypted CI state (GitHub Actions)
+.dd-state/
