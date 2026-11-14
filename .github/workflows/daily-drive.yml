@@ -15,9 +15,12 @@ name: Daily Drive
 
 on:
   schedule:
-    # UTC, same slots as the Docker setup (11:00 and 22:00).
-    # Minute 7 avoids the top-of-hour rush that delays scheduled runs.
-    - cron: "7 11,22 * * *"
+    # Goal: refresh once a day at ~6:00 AM America/Chicago (CDT or CST).
+    # GitHub delays scheduled runs by hours on busy days, so a single cron
+    # slot lands far too late. Instead we fire every 30 min overnight and
+    # the "Gate" step only lets the FIRST run at/after 6:00 AM Chicago time
+    # (before noon) through each day. Other runs skip in a few seconds.
+    - cron: "13,43 0-17 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -40,19 +43,62 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # Decide whether this run should refresh. Manual runs always do.
+      - name: Gate (6 AM Chicago, once per day)
+        id: time
+        run: |
+          echo "date=$(TZ=America/Chicago date +%F)" >> "$GITHUB_OUTPUT"
+          hour=$(TZ=America/Chicago date +%-H)
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "candidate=manual" >> "$GITHUB_OUTPUT"
+          elif [ "$hour" -ge 6 ] && [ "$hour" -lt 12 ]; then
+            echo "candidate=scheduled" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate=no" >> "$GITHUB_OUTPUT"
+            echo "Outside the 6 AM-noon Chicago window, skipping."
+          fi
+
+      # A per-day cache entry marks "already refreshed today" (holds no data).
+      - name: Check if already refreshed today
+        id: ran
+        if: ${{ steps.time.outputs.candidate == 'scheduled' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .dd-ran
+          key: dd-ran-${{ steps.time.outputs.date }}
+          lookup-only: true
+
+      - name: Decide
+        id: gate
+        run: |
+          if [ "${{ steps.time.outputs.candidate }}" = "manual" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.time.outputs.candidate }}" = "scheduled" ] && [ "${{ steps.ran.outputs.cache-hit }}" != "true" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "First run after 6 AM Chicago today, refreshing."
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            [ "${{ steps.ran.outputs.cache-hit }}" = "true" ] && echo "Already refreshed today, skipping."
+            true
+          fi
+
       - uses: actions/checkout@v4
+        if: ${{ steps.gate.outputs.go == 'true' }}
         with:
           persist-credentials: false
 
       - uses: actions/setup-node@v4
+        if: ${{ steps.gate.outputs.go == 'true' }}
         with:
           node-version: 24
           # No npm cache: package-lock.json is gitignored in this repo.
 
       - name: Install dependencies
+        if: ${{ steps.gate.outputs.go == 'true' }}
         run: npm install --omit=dev --no-audit --no-fund --loglevel=error > /dev/null 2>&1 || { echo "npm install failed"; exit 1; }
 
       - name: Restore encrypted state
+        if: ${{ steps.gate.outputs.go == 'true' }}
         uses: actions/cache/restore@v4
         with:
           path: .dd-state
@@ -60,6 +106,7 @@ jobs:
           restore-keys: dd-state-
 
       - name: Refresh playlist (output suppressed)
+        if: ${{ steps.gate.outputs.go == 'true' }}
         env:
           DD_CONFIG_YAML: ${{ secrets.DD_CONFIG_YAML }}
           DD_TOKEN_JSON: ${{ secrets.DD_TOKEN_JSON }}
@@ -69,8 +116,20 @@ jobs:
         run: node scripts/ci-run.js
 
       - name: Save encrypted state
-        if: ${{ always() && hashFiles('.dd-state/state.json.enc') != '' }}
+        if: ${{ always() && steps.gate.outputs.go == 'true' && hashFiles('.dd-state/state.json.enc') != '' }}
         uses: actions/cache/save@v4
         with:
           path: .dd-state
           key: dd-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Mark today as done so later triggers skip. Only for scheduled runs.
+      - name: Mark today as refreshed
+        if: ${{ success() && steps.time.outputs.candidate == 'scheduled' && steps.gate.outputs.go == 'true' }}
+        run: mkdir -p .dd-ran && echo done > .dd-ran/marker
+
+      - name: Save today's marker
+        if: ${{ success() && steps.time.outputs.candidate == 'scheduled' && steps.gate.outputs.go == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .dd-ran
+          key: dd-ran-${{ steps.time.outputs.date }}
