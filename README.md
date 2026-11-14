@@ -104,7 +104,7 @@ These are designed for Linux-style deployments (including mini PCs and SBCs).
 
 ### Run on GitHub Actions
 
-`.github/workflows/daily-drive.yml` refreshes the playlist at 11:07 and 22:07 UTC (and on demand from the Actions tab).
+`.github/workflows/daily-drive.yml` refreshes the playlist once a day at about 6:00 AM Chicago time, adjusting for daylight saving automatically, and on demand from the Actions tab. GitHub can delay scheduled runs by hours, so the workflow is triggered every 30 minutes overnight. Only the first trigger between 6 AM and noon Chicago time each day refreshes; the others skip in a few seconds. To change the time or time zone, edit the `Gate` step.
 
 Actions logs on a public repo are public, so the workflow runs through `scripts/ci-run.js`, which throws away all script output and prints only fixed lines like `refresh succeeded` or `refresh failed (exit code 1)`. No podcast names, songs, IDs, or error messages ever reach the log. To see why a run failed, run `npm test` locally.
 
