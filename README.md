@@ -104,27 +104,33 @@ These are designed for Linux-style deployments (including mini PCs and SBCs).
 
 ### Run on Vercel (daily at 6 AM Chicago)
 
-`vercel.json` + `api/refresh.js` run the refresh on Vercel cron. Two jobs, at 11:00 and 12:00 UTC, call `api/refresh.js`. Only the one that lands in the 6 AM hour in Chicago refreshes, so the time stays right across daylight saving. `index.js` runs unchanged. On the free Hobby plan, the refresh happens between 6:00 and 6:59 AM. Vercel logs are private to your account.
+`vercel.json` and `api/refresh.js` run the refresh on Vercel cron. Two jobs, at 11:00 and 12:00 UTC, call `api/refresh.js`. Only the one that lands in the 6 AM hour in Chicago refreshes, so the time stays right across daylight saving. `index.js` runs unchanged. On the free Hobby plan, the refresh happens between 6:00 and 6:59 AM. Vercel logs are private to your account. The site itself serves nothing except `robots.txt` and the protected endpoint.
 
-`.vercelignore` uploads only `api/`, `index.js`, `package.json`, `package-lock.json` and `vercel.json`, never your config, token, or `.env`.
+One-time setup:
 
 ```bash
 npm i -g vercel
 vercel login
 vercel link --yes --project dailydrive
-openssl rand -hex 32 | vercel env add CRON_SECRET production
-vercel env add DD_CONFIG_YAML production < config.yaml
-vercel env add DD_TOKEN_JSON production < .spotify-token.json
-vercel deploy --prod
+openssl rand -hex 32 | vercel env add CRON_SECRET production --sensitive
+vercel env add DD_CONFIG_YAML production --sensitive < config.yaml
+vercel env add DD_TOKEN_JSON production --sensitive < .spotify-token.json
+scripts/deploy-vercel.sh
 ```
 
-Test it (prints a dry run in the Vercel logs and changes nothing):
+Always deploy with `scripts/deploy-vercel.sh`. It uploads only the function's files from a clean temp folder. Your config, token, `.env` and the Dockerfile can never be included.
+
+Check it:
 
 ```bash
-curl -H "Authorization: Bearer $(vercel env pull --yes --environment production /dev/stdout | grep CRON_SECRET | cut -d'"' -f2)" "https://<your-deployment>/api/refresh?force=1&dry=1"
+vercel crons ls
+vercel crons run /api/refresh
+vercel logs https://<your-production-url> --since 5m
 ```
 
-If you edit `config.yaml`, update `DD_CONFIG_YAML` with `vercel env rm` and then `vercel env add`, then run `vercel deploy --prod` again. If Spotify issues a new refresh token (rare), the logs say so: run `npm run setup` locally and update `DD_TOKEN_JSON`.
+Outside the 6 AM hour, a triggered run logs `Skipping: it's N:xx in Chicago`.
+
+If you edit `config.yaml`: run `vercel env rm DD_CONFIG_YAML production`, add it again as above, then run `scripts/deploy-vercel.sh`. If Spotify issues a new refresh token (rare), the logs say so: run `npm run setup` locally and update `DD_TOKEN_JSON` the same way.
 
 ### Run on GitHub Actions
 
