@@ -130,6 +130,20 @@ Notes:
 - If you edit `config.yaml`, update the `DD_CONFIG_YAML` secret too.
 - Turn off the Docker container once this is running, or the playlist refreshes twice.
 
+### On-time trigger with Vercel cron
+
+GitHub's own schedule often runs hours late. `vercel-trigger/` is a tiny Vercel project whose cron starts the workflow at **11:00 and 12:00 UTC** every day. The 6 AM check lets through whichever one lands at 6 AM Chicago time, which keeps it right across daylight saving. On the free Hobby plan, Vercel fires anytime within the scheduled hour, so the refresh happens between **6:00 and 6:59 AM**. The GitHub schedule stays on as a backup.
+
+Setup:
+1. Create a GitHub fine-grained token: **only this repo**, Repository permissions → **Actions: Read and write**. It can start and cancel workflow runs, but can't read secrets or code changes.
+2. In Vercel, click **Add New → Project** and import this repo. Set **Root Directory** to `vercel-trigger` and **Framework Preset** to **Other**.
+3. Add environment variables (Production):
+   - `CRON_SECRET`: a random string of letters and numbers, for example `openssl rand -hex 32`
+   - `GITHUB_DISPATCH_TOKEN`: the token from step 1
+4. Deploy. The two jobs show up under the project's **Settings → Cron Jobs**.
+
+To test, click **Run** next to a job in Settings → Cron Jobs, then look for a new run in this repo's Actions tab. Outside 6 AM–noon Chicago time, the run starts and skips, which is expected.
+
 ## Configuration Highlights
 
 Main file: `config.yaml`

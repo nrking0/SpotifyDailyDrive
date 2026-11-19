@@ -16,10 +16,12 @@ name: Daily Drive
 on:
   schedule:
     # Goal: refresh once a day at ~6:00 AM America/Chicago (CDT or CST).
-    # GitHub delays scheduled runs by hours on busy days, so a single cron
-    # slot lands far too late. Instead we fire every 30 min overnight and
-    # the "Gate" step only lets the FIRST run at/after 6:00 AM Chicago time
-    # (before noon) through each day. Other runs skip in a few seconds.
+    # The main trigger is Vercel cron (vercel-trigger/), which starts this
+    # workflow at 11:00 and 12:00 UTC with source=cron. GitHub's own
+    # schedule below is a backup: it often runs hours late or not at all.
+    # The backup fires every 30 min overnight. For both, the "Gate" step only
+    # lets the FIRST run at/after 6:00 AM Chicago time (before noon) through
+    # each day. Other runs skip in a few seconds.
     - cron: "13,43 0-17 * * *"
   workflow_dispatch:
     inputs:
@@ -27,6 +29,11 @@ on:
         description: "Dry run (don't change the playlist)"
         type: boolean
         default: false
+      source:
+        description: "Leave as manual. 'cron' is used by the Vercel trigger and applies the 6 AM check."
+        type: choice
+        options: [manual, cron]
+        default: manual
 
 permissions:
   contents: read
@@ -44,12 +51,16 @@ jobs:
 
     steps:
       # Decide whether this run should refresh. Manual runs always do.
+      # Scheduled runs and Vercel cron runs (source=cron) get the 6 AM check.
       - name: Gate (6 AM Chicago, once per day)
         id: time
+        env:
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ inputs.source }}
         run: |
           echo "date=$(TZ=America/Chicago date +%F)" >> "$GITHUB_OUTPUT"
           hour=$(TZ=America/Chicago date +%-H)
-          if [ "${{ github.event_name }}" != "schedule" ]; then
+          if [ "$EVENT" != "schedule" ] && [ "$SOURCE" != "cron" ]; then
             echo "candidate=manual" >> "$GITHUB_OUTPUT"
           elif [ "$hour" -ge 6 ] && [ "$hour" -lt 12 ]; then
             echo "candidate=scheduled" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,6 @@
+{
+  "name": "dailydrive-vercel-trigger",
+  "private": true,
+  "description": "Vercel cron that starts the Daily Drive GitHub Actions workflow at 6 AM Chicago time",
+  "engines": { "node": ">=18" }
+}
