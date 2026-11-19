@@ -109,3 +109,6 @@ docs/
 
 # Encrypted CI state (GitHub Actions)
 .dd-state/
+
+# Vercel CLI project link
+.vercel/

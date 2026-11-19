@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "outputDirectory": "public",
+  "functions": {
+    "api/refresh.js": {
+      "maxDuration": 60,
+      "includeFiles": "{index.js,package.json,node_modules/**}"
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/refresh",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/refresh",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}
