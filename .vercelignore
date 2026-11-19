@@ -1,0 +1,8 @@
+# Upload ONLY what the Vercel function needs. Everything else stays local,
+# including config.yaml, .spotify-token.json, .env, and state.json.
+/*
+!/api
+!/index.js
+!/package.json
+!/package-lock.json
+!/vercel.json

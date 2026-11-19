@@ -14,13 +14,11 @@
 name: Daily Drive
 
 on:
-  schedule:
-    # Goal: refresh once a day at ~6:00 AM America/Chicago (CDT or CST).
-    # GitHub delays scheduled runs by hours on busy days, so a single cron
-    # slot lands far too late. Instead we fire every 30 min overnight and
-    # the "Gate" step only lets the FIRST run at/after 6:00 AM Chicago time
-    # (before noon) through each day. Other runs skip in a few seconds.
-    - cron: "13,43 0-17 * * *"
+  # The daily 6 AM refresh now runs on Vercel cron (vercel.json, api/refresh.js).
+  # GitHub's scheduler delivered runs hours late, so this workflow is manual
+  # only. To bring the GitHub schedule back, re-add:
+  #   schedule:
+  #     - cron: "13,43 0-17 * * *"
   workflow_dispatch:
     inputs:
       dry_run:

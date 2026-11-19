@@ -102,9 +102,33 @@ For unattended updates, use the scripts in `scripts/` with cron:
 
 These are designed for Linux-style deployments (including mini PCs and SBCs).
 
+### Run on Vercel (daily at 6 AM Chicago)
+
+`vercel.json` + `api/refresh.js` run the refresh on Vercel cron. Two jobs, at 11:00 and 12:00 UTC, call `api/refresh.js`. Only the one that lands in the 6 AM hour in Chicago refreshes, so the time stays right across daylight saving. `index.js` runs unchanged. On the free Hobby plan, the refresh happens between 6:00 and 6:59 AM. Vercel logs are private to your account.
+
+`.vercelignore` uploads only `api/`, `index.js`, `package.json`, `package-lock.json` and `vercel.json`, never your config, token, or `.env`.
+
+```bash
+npm i -g vercel
+vercel login
+vercel link --yes --project dailydrive
+openssl rand -hex 32 | vercel env add CRON_SECRET production
+vercel env add DD_CONFIG_YAML production < config.yaml
+vercel env add DD_TOKEN_JSON production < .spotify-token.json
+vercel deploy --prod
+```
+
+Test it (prints a dry run in the Vercel logs and changes nothing):
+
+```bash
+curl -H "Authorization: Bearer $(vercel env pull --yes --environment production /dev/stdout | grep CRON_SECRET | cut -d'"' -f2)" "https://<your-deployment>/api/refresh?force=1&dry=1"
+```
+
+If you edit `config.yaml`, update `DD_CONFIG_YAML` with `vercel env rm` and then `vercel env add`, then run `vercel deploy --prod` again. If Spotify issues a new refresh token (rare), the logs say so: run `npm run setup` locally and update `DD_TOKEN_JSON`.
+
 ### Run on GitHub Actions
 
-`.github/workflows/daily-drive.yml` refreshes the playlist once a day at about 6:00 AM Chicago time, adjusting for daylight saving automatically, and on demand from the Actions tab. GitHub can delay scheduled runs by hours, so the workflow is triggered every 30 minutes overnight. Only the first trigger between 6 AM and noon Chicago time each day refreshes; the others skip in a few seconds. To change the time or time zone, edit the `Gate` step.
+`.github/workflows/daily-drive.yml` is manual-only (Actions tab → Run workflow). The daily run moved to Vercel because GitHub delivered scheduled runs hours late.
 
 Actions logs on a public repo are public, so the workflow runs through `scripts/ci-run.js`, which throws away all script output and prints only fixed lines like `refresh succeeded` or `refresh failed (exit code 1)`. No podcast names, songs, IDs, or error messages ever reach the log. To see why a run failed, run `npm test` locally.
 
